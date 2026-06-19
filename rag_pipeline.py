@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import chromadb
 from sentence_transformers import SentenceTransformer
 import openai
+import requests
 
 load_dotenv()
 
@@ -64,8 +65,8 @@ def add_documents_if_new(documents):
         if not existing['ids']:
             new_docs.append(doc)
             new_ids.append(doc_id)
-        else:
-            print(f'Skipping existing document: {doc[:60]}...')
+        # else:
+        #     print(f'Skipping existing document: {doc[:60]}...')
 
     if new_docs:
         embeddings = [model.encode(doc).tolist() for doc in new_docs]
@@ -111,37 +112,45 @@ def generate_answer(query, retrieved_docs):
         return response.choices[0].message['content'].strip()
 
     # Fall back to Ollama local model
-    ollama_prompt = {
-        'model': OLLAMA_MODEL,
-        'prompt': prompt,
-        'temperature': 0.2,
-        'max_tokens': 200,
-    }
+    print(f"Using Ollama model: {OLLAMA_MODEL}")
 
     try:
-        proc = subprocess.run(
-            [OLLAMA_PATH, 'run', OLLAMA_MODEL, prompt],
-            capture_output=True,
-            text=True,
-            check=True,
+        import requests
+        # Use Ollama HTTP API (faster than subprocess + more reliable in WSL)
+        response = requests.post(
+            'http://localhost:11434/api/generate',
+            json={
+                'model': OLLAMA_MODEL,
+                'prompt': prompt,
+                'temperature': 0.2,
+                'stream': False,
+            },
+            timeout=300,
         )
-        output_text = proc.stdout.strip()
+        response.raise_for_status()
+        result = response.json()
+        output_text = result.get('response', '').strip()
         if not output_text:
             raise RuntimeError('Ollama returned no output.')
         return output_text
-    except FileNotFoundError:
+    except requests.exceptions.ConnectionError:
         raise RuntimeError(
-            f'Ollama executable not found at {OLLAMA_PATH}. Verify the path or install Ollama and retry.'
+            'Cannot connect to Ollama. Ensure Ollama is running on localhost:11434. '
+            'Start Ollama with: ollama serve'
         )
-    except subprocess.CalledProcessError as exc:
-        stderr_text = exc.stderr.strip()
-        raise RuntimeError(
-            f'Ollama call failed: {stderr_text or exc.stdout.strip()}'
-        )
+    except requests.exceptions.Timeout:
+        raise RuntimeError('Ollama request timed out.')
+    except Exception as exc:
+        raise RuntimeError(f'Ollama API call failed: {str(exc)}')
 
 
 def answer_query(query, top_k=2):
     retrieved_docs, distances = retrieve_top_docs(query, top_k=top_k)
+
+    print(f'Retrieved {len(retrieved_docs)} documents for query: "{query}"')
+    for i, doc in enumerate(retrieved_docs):
+        print(f'  Doc {i+1} (distance: {distances[i]:.4f}): {doc[:60]}...')
+
     answer = generate_answer(query, retrieved_docs)
     return {
         'query': query,
