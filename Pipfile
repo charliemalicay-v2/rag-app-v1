@@ -9,6 +9,8 @@ sentence-transformers = "*"
 python-dotenv = "*"
 openai = "*"
 requests = "*"
+fastapi = "*"
+uvicorn = "*"
 
 [dev-packages]
 
